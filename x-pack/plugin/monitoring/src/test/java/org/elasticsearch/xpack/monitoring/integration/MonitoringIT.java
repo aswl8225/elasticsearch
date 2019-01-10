@@ -113,22 +113,16 @@ public class MonitoringIT extends ESSingleNodeTestCase {
     }
 
     /**
-     * Monitoring Bulk API test:
+     * Monitoring Bulk test:
      *
-     * This test uses the Monitoring Bulk API to index document as an external application like Kibana would do. It
-     * then ensure that the documents were correctly indexed and have the expected information.
+     * This test uses the Monitoring Bulk Request to index documents. It then ensure that the documents were correctly
+     * indexed and have the expected information. REST API tests (like how this is really called) are handled as part of the
+     * XPackRest tests.
      */
     public void testMonitoringBulk() throws Exception {
         whenExportersAreReady(() -> {
             final MonitoredSystem system = randomSystem();
             final TimeValue interval = TimeValue.timeValueSeconds(randomIntBetween(1, 20));
-
-            // REST is the realistic way that these operations happen, so it's the most realistic way to integration test it too
-            // Use Monitoring Bulk API to index 3 documents
-            //final Request bulkRequest = new Request("POST", "/_xpack/monitoring/_bulk");
-            //<<add all parameters>
-            //bulkRequest.setJsonEntity(createBulkEntity());
-            //final Response bulkResponse = getRestClient().performRequest(request);
 
             final MonitoringBulkResponse bulkResponse =
                     new MonitoringBulkRequestBuilder(client())
@@ -152,7 +146,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
                                 .get();
 
                 // exactly 3 results are expected
-                assertThat("No monitoring documents yet", response.getHits().getTotalHits(), equalTo(3L));
+                assertThat("No monitoring documents yet", response.getHits().getTotalHits().value, equalTo(3L));
 
                 final List<Map<String, Object>> sources =
                         Arrays.stream(response.getHits().getHits())
@@ -168,7 +162,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
             final SearchResponse response = client().prepareSearch(monitoringIndex).get();
             final SearchHits hits = response.getHits();
 
-            assertThat(response.getHits().getTotalHits(), equalTo(3L));
+            assertThat(response.getHits().getTotalHits().value, equalTo(3L));
             assertThat("Monitoring documents must have the same timestamp",
                        Arrays.stream(hits.getHits())
                              .map(hit -> extractValue("timestamp", hit.getSourceAsMap()))
@@ -194,6 +188,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
      * This test waits for the monitoring service to collect monitoring documents and then checks that all expected documents
      * have been indexed with the expected information.
      */
+    @AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/29880")
     public void testMonitoringService() throws Exception {
         final boolean createAPMIndex = randomBoolean();
         final String indexName = createAPMIndex ? "apm-2017.11.06" : "books";
@@ -204,6 +199,11 @@ public class MonitoringIT extends ESSingleNodeTestCase {
                            .get()
                            .status(),
                    is(RestStatus.CREATED));
+
+        final Settings settings = Settings.builder()
+            .put("cluster.metadata.display_name", "my cluster")
+            .build();
+        assertAcked(client().admin().cluster().prepareUpdateSettings().setTransientSettings(settings));
 
         whenExportersAreReady(() -> {
             final AtomicReference<SearchResponse> searchResponse = new AtomicReference<>();
@@ -313,7 +313,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
     private void assertClusterStatsMonitoringDoc(final Map<String, Object> document,
                                                  final boolean apmIndicesExist) {
         final Map<String, Object> source = (Map<String, Object>) document.get("_source");
-        assertEquals(11, source.size());
+        assertEquals(12, source.size());
 
         assertThat((String) source.get("cluster_name"), not(isEmptyOrNullString()));
         assertThat(source.get("version"), equalTo(Version.CURRENT.toString()));
@@ -373,7 +373,15 @@ public class MonitoringIT extends ESSingleNodeTestCase {
         assertThat(clusterState.remove("cluster_uuid"), notNullValue());
         assertThat(clusterState.remove("master_node"), notNullValue());
         assertThat(clusterState.remove("nodes"), notNullValue());
+        assertThat(clusterState.remove("term"), notNullValue());
+        assertThat(clusterState.remove("last_committed_config"), notNullValue());
+        assertThat(clusterState.remove("last_accepted_config"), notNullValue());
         assertThat(clusterState.keySet(), empty());
+
+        final Map<String, Object> clusterSettings = (Map<String, Object>) source.get("cluster_settings");
+        assertThat(clusterSettings, notNullValue());
+        assertThat(clusterSettings.remove("cluster"), notNullValue());
+        assertThat(clusterSettings.keySet(), empty());
     }
 
     /**
@@ -416,14 +424,11 @@ public class MonitoringIT extends ESSingleNodeTestCase {
 
         // particular field values checked in the index stats tests
         final Map<String, Object> indexStats = (Map<String, Object>) source.get(IndexStatsMonitoringDoc.TYPE);
-        assertEquals(8, indexStats.size());
+        assertEquals(7, indexStats.size());
         assertThat((String) indexStats.get("index"), not(isEmptyOrNullString()));
         assertThat((String) indexStats.get("uuid"), not(isEmptyOrNullString()));
         assertThat(indexStats.get("created"), notNullValue());
         assertThat((String) indexStats.get("status"), not(isEmptyOrNullString()));
-        assertThat(indexStats.get("version"), notNullValue());
-        final Map<String, Object> version = (Map<String, Object>) indexStats.get("version");
-        assertEquals(2, version.size());
         assertThat(indexStats.get("shards"), notNullValue());
         final Map<String, Object> shards = (Map<String, Object>) indexStats.get("shards");
         assertEquals(11, shards.size());
@@ -538,16 +543,16 @@ public class MonitoringIT extends ESSingleNodeTestCase {
         if (ti.getLockName() != null) {
           b.append(" on ").append(ti.getLockName());
         }
-        
+
         if (ti.getLockOwnerName() != null) {
           b.append(" owned by \"").append(ti.getLockOwnerName())
            .append("\" ID=").append(ti.getLockOwnerId());
         }
-        
+
         b.append(ti.isSuspended() ? " (suspended)" : "");
         b.append(ti.isInNative() ? " (in native code)" : "");
         b.append("\n");
-        
+
         final StackTraceElement[] stack = ti.getStackTrace();
         final LockInfo lockInfo = ti.getLockInfo();
         final MonitorInfo [] monitorInfos = ti.getLockedMonitors();
@@ -559,7 +564,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
              .append(lockInfo)
              .append("\n");
           }
-          
+
           for (MonitorInfo mi : monitorInfos) {
             if (mi.getLockedStackDepth() == i) {
               b.append("\t- locked ").append(mi).append("\n");
@@ -604,7 +609,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
             assertThat("No monitoring documents yet",
                        client().prepareSearch(".monitoring-es-" + TEMPLATE_VERSION + "-*")
                                .setSize(0)
-                               .get().getHits().getTotalHits(),
+                               .get().getHits().getTotalHits().value,
                        greaterThan(0L));
         });
     }
@@ -616,6 +621,7 @@ public class MonitoringIT extends ESSingleNodeTestCase {
         final Settings settings = Settings.builder()
                 .putNull("xpack.monitoring.collection.enabled")
                 .putNull("xpack.monitoring.exporters._local.enabled")
+                .putNull("cluster.metadata.display_name")
                 .build();
 
         assertAcked(client().admin().cluster().prepareUpdateSettings().setTransientSettings(settings));

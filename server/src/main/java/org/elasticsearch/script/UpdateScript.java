@@ -27,7 +27,7 @@ import java.util.Map;
  */
 public abstract class UpdateScript {
 
-    public static final String[] PARAMETERS = { "ctx" };
+    public static final String[] PARAMETERS = { };
 
     /** The context used to compile {@link UpdateScript} factories. */
     public static final ScriptContext<Factory> CONTEXT = new ScriptContext<>("update", Factory.class);
@@ -35,8 +35,12 @@ public abstract class UpdateScript {
     /** The generic runtime parameters for the script. */
     private final Map<String, Object> params;
 
-    public UpdateScript(Map<String, Object> params) {
+    /** The update context for the script. */
+    private final Map<String, Object> ctx;
+
+    public UpdateScript(Map<String, Object> params, Map<String, Object> ctx) {
         this.params = params;
+        this.ctx = ctx;
     }
 
     /** Return the parameters for this script. */
@@ -44,9 +48,14 @@ public abstract class UpdateScript {
         return params;
     }
 
-    public abstract void execute(Map<String, Object> ctx);
+    /** Return the update context for this script. */
+    public Map<String, Object> getCtx() {
+        return ctx;
+    }
+
+    public abstract void execute();
 
     public interface Factory {
-        UpdateScript newInstance(Map<String, Object> params);
+        UpdateScript newInstance(Map<String, Object> params, Map<String, Object> ctx);
     }
 }

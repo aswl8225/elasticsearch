@@ -20,6 +20,8 @@ package org.elasticsearch.cluster.metadata;
 
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
+
+import org.apache.logging.log4j.LogManager;
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.AbstractDiffable;
@@ -33,7 +35,6 @@ import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.logging.DeprecationLogger;
-import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.common.xcontent.ToXContent;
@@ -52,7 +53,7 @@ import java.util.Set;
 
 public class IndexTemplateMetaData extends AbstractDiffable<IndexTemplateMetaData> {
 
-    private static final DeprecationLogger DEPRECATION_LOGGER = new DeprecationLogger(Loggers.getLogger(IndexTemplateMetaData.class));
+    private static final DeprecationLogger deprecationLogger = new DeprecationLogger(LogManager.getLogger(IndexTemplateMetaData.class));
 
     private final String name;
 
@@ -133,16 +134,8 @@ public class IndexTemplateMetaData extends AbstractDiffable<IndexTemplateMetaDat
         return this.patterns;
     }
 
-    public List<String> getPatterns() {
-        return this.patterns;
-    }
-
     public Settings settings() {
         return this.settings;
-    }
-
-    public Settings getSettings() {
-        return settings();
     }
 
     public ImmutableOpenMap<String, CompressedXContent> mappings() {
@@ -313,12 +306,7 @@ public class IndexTemplateMetaData extends AbstractDiffable<IndexTemplateMetaDat
             return this;
         }
 
-        public Builder removeMapping(String mappingType) {
-            mappings.remove(mappingType);
-            return this;
-        }
-
-        public Builder putMapping(String mappingType, CompressedXContent mappingSource) throws IOException {
+        public Builder putMapping(String mappingType, CompressedXContent mappingSource) {
             mappings.put(mappingType, mappingSource);
             return this;
         }
@@ -450,7 +438,7 @@ public class IndexTemplateMetaData extends AbstractDiffable<IndexTemplateMetaDat
                 } else if (token.isValue()) {
                     // Prior to 5.1.0, elasticsearch only supported a single index pattern called `template` (#21009)
                     if("template".equals(currentFieldName)) {
-                        DEPRECATION_LOGGER.deprecated("Deprecated field [template] used, replaced by [index_patterns]");
+                        deprecationLogger.deprecated("Deprecated field [template] used, replaced by [index_patterns]");
                         builder.patterns(Collections.singletonList(parser.text()));
                     } else if ("order".equals(currentFieldName)) {
                         builder.order(parser.intValue());
@@ -464,7 +452,7 @@ public class IndexTemplateMetaData extends AbstractDiffable<IndexTemplateMetaDat
 
         private static String skipTemplateName(XContentParser parser) throws IOException {
             XContentParser.Token token = parser.nextToken();
-            if (token != null && token == XContentParser.Token.START_OBJECT) {
+            if (token == XContentParser.Token.START_OBJECT) {
                 token = parser.nextToken();
                 if (token == XContentParser.Token.FIELD_NAME) {
                     String currentFieldName = parser.currentName();

@@ -5,6 +5,7 @@
  */
 package org.elasticsearch.xpack.ml.filestructurefinder;
 
+import org.elasticsearch.xpack.core.ml.filestructurefinder.FileStructure;
 import org.xml.sax.SAXException;
 
 import javax.xml.parsers.ParserConfigurationException;
@@ -25,6 +26,14 @@ public class XmlFileStructureFinderFactory implements FileStructureFinderFactory
         xmlFactory = XMLInputFactory.newInstance();
         xmlFactory.setProperty(XMLInputFactory.IS_NAMESPACE_AWARE, Boolean.FALSE);
         xmlFactory.setProperty(XMLInputFactory.IS_VALIDATING, Boolean.FALSE);
+        xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, Boolean.FALSE);
+        xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
+        xmlFactory.setProperty(XMLInputFactory.IS_REPLACING_ENTITY_REFERENCES, Boolean.FALSE);
+    }
+
+    @Override
+    public boolean canFindFormat(FileStructure.Format format) {
+        return format == null || format == FileStructure.Format.XML;
     }
 
     /**
@@ -115,8 +124,10 @@ public class XmlFileStructureFinderFactory implements FileStructureFinderFactory
     }
 
     @Override
-    public FileStructureFinder createFromSample(List<String> explanation, String sample, String charsetName, Boolean hasByteOrderMarker)
+    public FileStructureFinder createFromSample(List<String> explanation, String sample, String charsetName, Boolean hasByteOrderMarker,
+                                                FileStructureOverrides overrides, TimeoutChecker timeoutChecker)
         throws IOException, ParserConfigurationException, SAXException {
-        return XmlFileStructureFinder.makeXmlFileStructureFinder(explanation, sample, charsetName, hasByteOrderMarker);
+        return XmlFileStructureFinder.makeXmlFileStructureFinder(explanation, sample, charsetName, hasByteOrderMarker, overrides,
+            timeoutChecker);
     }
 }

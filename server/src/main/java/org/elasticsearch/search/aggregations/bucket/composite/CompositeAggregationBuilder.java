@@ -144,6 +144,13 @@ public class CompositeAggregationBuilder extends AbstractAggregationBuilder<Comp
         return this;
     }
 
+    /**
+     * @return the number of composite buckets. Defaults to {@code 10}.
+     */
+    public int size() {
+        return size;
+    }
+
     @Override
     protected AggregatorFactory<?> doBuild(SearchContext context, AggregatorFactory<?> parent,
                                            AggregatorFactories.Builder subfactoriesBuilder) throws IOException {
@@ -163,7 +170,7 @@ public class CompositeAggregationBuilder extends AbstractAggregationBuilder<Comp
                 throw new IllegalArgumentException("[after] has " + after.size() +
                     " value(s) but [sources] has " + sources.size());
             }
-            Comparable<?>[] values = new Comparable<?>[sources.size()];
+            Comparable[] values = new Comparable[sources.size()];
             for (int i = 0; i < sources.size(); i++) {
                 String sourceName = sources.get(i).name();
                 if (after.containsKey(sourceName) == false) {
@@ -173,7 +180,7 @@ public class CompositeAggregationBuilder extends AbstractAggregationBuilder<Comp
                 if (configs[i].missingBucket() && obj == null) {
                     values[i] = null;
                 } else if (obj instanceof Comparable) {
-                    values[i] = (Comparable<?>) obj;
+                    values[i] = (Comparable) obj;
                 } else {
                     throw new IllegalArgumentException("Invalid value for [after." + sources.get(i).name() +
                         "], expected comparable, got [" + (obj == null ? "null" :  obj.getClass().getSimpleName()) + "]");
@@ -193,11 +200,7 @@ public class CompositeAggregationBuilder extends AbstractAggregationBuilder<Comp
         builder.field(SIZE_FIELD_NAME.getPreferredName(), size);
         builder.startArray(SOURCES_FIELD_NAME.getPreferredName());
         for (CompositeValuesSourceBuilder<?> source: sources) {
-            builder.startObject();
-            builder.startObject(source.name());
-            source.toXContent(builder, params);
-            builder.endObject();
-            builder.endObject();
+            CompositeValuesSourceParserHelper.toXContent(source, builder, params);
         }
         builder.endArray();
         if (after != null) {

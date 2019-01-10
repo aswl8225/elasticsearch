@@ -26,10 +26,12 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.store.Directory;
+import org.elasticsearch.Version;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
+import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
@@ -44,7 +46,6 @@ import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.engine.EngineConfig;
 import org.elasticsearch.index.engine.EngineTestCase;
 import org.elasticsearch.index.engine.InternalEngine;
-import org.elasticsearch.index.fieldvisitor.SingleFieldsVisitor;
 import org.elasticsearch.index.mapper.IdFieldMapper;
 import org.elasticsearch.index.mapper.ParseContext.Document;
 import org.elasticsearch.index.mapper.ParsedDocument;
@@ -115,7 +116,7 @@ public class RefreshListenersTests extends ESTestCase {
                 // we don't need to notify anybody in this test
             }
         };
-        store.createEmpty();
+        store.createEmpty(Version.CURRENT.luceneVersion);
         final long primaryTerm = randomNonNegativeLong();
         final String translogUUID =
             Translog.createEmptyTranslog(translogConfig.getTranslogPath(), SequenceNumbers.NO_OPS_PERFORMED, shardId, primaryTerm);
@@ -124,9 +125,10 @@ public class RefreshListenersTests extends ESTestCase {
             indexSettings, null, store, newMergePolicy(), iwc.getAnalyzer(), iwc.getSimilarity(), new CodecService(null, logger),
             eventListener, IndexSearcher.getDefaultQueryCache(), IndexSearcher.getDefaultQueryCachingPolicy(), translogConfig,
             TimeValue.timeValueMinutes(5), Collections.singletonList(listeners), Collections.emptyList(), null,
-            new NoneCircuitBreakerService(), () -> SequenceNumbers.NO_OPS_PERFORMED, () -> primaryTerm,
-            EngineTestCase.tombstoneDocSupplier());
+            new NoneCircuitBreakerService(), () -> SequenceNumbers.NO_OPS_PERFORMED, Collections::emptySet,
+                () -> primaryTerm, EngineTestCase.tombstoneDocSupplier());
         engine = new InternalEngine(config);
+        engine.initializeMaxSeqNoOfUpdatesOrDeletes();
         engine.recoverFromTranslog((e, s) -> 0, Long.MAX_VALUE);
         listeners.setCurrentRefreshLocationSupplier(engine::getTranslogLastWriteLocation);
     }
@@ -262,6 +264,7 @@ public class RefreshListenersTests extends ESTestCase {
      * adding listeners. This can catch the situation where a refresh happens right as the listener is being added such that the listener
      * misses the refresh and has to catch the next one. If the listener wasn't able to properly catch the next one then this would fail.
      */
+    @AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/37261")
     public void testConcurrentRefresh() throws Exception {
         AtomicBoolean run = new AtomicBoolean(true);
         Thread refresher = new Thread(() -> {
@@ -323,9 +326,9 @@ public class RefreshListenersTests extends ESTestCase {
                         try (Engine.GetResult getResult = engine.get(get, engine::acquireSearcher)) {
                             assertTrue("document not found", getResult.exists());
                             assertEquals(iteration, getResult.version());
-                            SingleFieldsVisitor visitor = new SingleFieldsVisitor("test");
-                            getResult.docIdAndVersion().reader.document(getResult.docIdAndVersion().docId, visitor);
-                            assertEquals(Arrays.asList(testFieldValue), visitor.fields().get("test"));
+                            org.apache.lucene.document.Document document =
+                                    getResult.docIdAndVersion().reader.document(getResult.docIdAndVersion().docId);
+                            assertEquals(new String[] {testFieldValue}, document.getValues("test"));
                         }
                     } catch (Exception t) {
                         throw new RuntimeException("failure on the [" + iteration + "] iteration of thread [" + threadId + "]", t);
@@ -339,6 +342,40 @@ public class RefreshListenersTests extends ESTestCase {
             indexer.join();
         }
         refresher.cancel();
+    }
+
+    public void testDisallowAddListeners() throws Exception {
+        assertEquals(0, listeners.pendingCount());
+        DummyRefreshListener listener = new DummyRefreshListener();
+        assertFalse(listeners.addOrNotify(index("1").getTranslogLocation(), listener));
+        engine.refresh("I said so");
+        assertFalse(listener.forcedRefresh.get());
+        listener.assertNoError();
+
+        try (Releasable releaseable1 = listeners.forceRefreshes()) {
+            listener = new DummyRefreshListener();
+            assertTrue(listeners.addOrNotify(index("1").getTranslogLocation(), listener));
+            assertTrue(listener.forcedRefresh.get());
+            listener.assertNoError();
+            assertEquals(0, listeners.pendingCount());
+
+            try (Releasable releaseable2 = listeners.forceRefreshes()) {
+                listener = new DummyRefreshListener();
+                assertTrue(listeners.addOrNotify(index("1").getTranslogLocation(), listener));
+                assertTrue(listener.forcedRefresh.get());
+                listener.assertNoError();
+                assertEquals(0, listeners.pendingCount());
+            }
+
+            listener = new DummyRefreshListener();
+            assertTrue(listeners.addOrNotify(index("1").getTranslogLocation(), listener));
+            assertTrue(listener.forcedRefresh.get());
+            listener.assertNoError();
+            assertEquals(0, listeners.pendingCount());
+        }
+
+        assertFalse(listeners.addOrNotify(index("1").getTranslogLocation(), new DummyRefreshListener()));
+        assertEquals(1, listeners.pendingCount());
     }
 
     private Engine.IndexResult index(String id) throws IOException {

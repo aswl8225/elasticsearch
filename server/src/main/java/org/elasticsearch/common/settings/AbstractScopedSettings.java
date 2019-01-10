@@ -19,15 +19,15 @@
 
 package org.elasticsearch.common.settings;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.search.spell.LevenshteinDistance;
 import org.apache.lucene.util.CollectionUtil;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.collect.Tuple;
-import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.regex.Regex;
 
-import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -48,41 +48,43 @@ import java.util.stream.Collectors;
  * A basic setting service that can be used for per-index and per-cluster settings.
  * This service offers transactional application of updates settings.
  */
-public abstract class AbstractScopedSettings extends AbstractComponent {
+public abstract class AbstractScopedSettings {
+
     public static final String ARCHIVED_SETTINGS_PREFIX = "archived.";
-    private Settings lastSettingsApplied = Settings.EMPTY;
-    private final List<SettingUpdater<?>> settingUpdaters = new CopyOnWriteArrayList<>();
-    private final Map<String, Setting<?>> complexMatchers;
-    private final Map<String, Setting<?>> keySettings;
-    private final Map<Setting<?>, Function<Map.Entry<String, String>, Map.Entry<String, String>>> settingUpgraders;
-    private final Setting.Property scope;
     private static final Pattern KEY_PATTERN = Pattern.compile("^(?:[-\\w]+[.])*[-\\w]+$");
     private static final Pattern GROUP_KEY_PATTERN = Pattern.compile("^(?:[-\\w]+[.])+$");
     private static final Pattern AFFIX_KEY_PATTERN = Pattern.compile("^(?:[-\\w]+[.])+[*](?:[.][-\\w]+)+$");
+
+    protected final Logger logger = LogManager.getLogger(this.getClass());
+
+    private final Settings settings;
+    private final List<SettingUpdater<?>> settingUpdaters = new CopyOnWriteArrayList<>();
+    private final Map<String, Setting<?>> complexMatchers;
+    private final Map<String, Setting<?>> keySettings;
+    private final Map<Setting<?>, SettingUpgrader<?>> settingUpgraders;
+    private final Setting.Property scope;
+    private Settings lastSettingsApplied;
 
     protected AbstractScopedSettings(
             final Settings settings,
             final Set<Setting<?>> settingsSet,
             final Set<SettingUpgrader<?>> settingUpgraders,
             final Setting.Property scope) {
-        super(settings);
+        this.settings = settings;
         this.lastSettingsApplied = Settings.EMPTY;
 
         this.settingUpgraders =
                 Collections.unmodifiableMap(
-                        settingUpgraders
-                                .stream()
-                                .collect(
-                                        Collectors.toMap(
-                                                SettingUpgrader::getSetting,
-                                                u -> e -> new AbstractMap.SimpleEntry<>(u.getKey(e.getKey()), u.getValue(e.getValue())))));
+                        settingUpgraders.stream().collect(Collectors.toMap(SettingUpgrader::getSetting, Function.identity())));
+
 
         this.scope = scope;
         Map<String, Setting<?>> complexMatchers = new HashMap<>();
         Map<String, Setting<?>> keySettings = new HashMap<>();
         for (Setting<?> setting : settingsSet) {
             if (setting.getProperties().contains(scope) == false) {
-                throw new IllegalArgumentException("Setting must be a " + scope + " setting but has: " + setting.getProperties());
+                throw new IllegalArgumentException("Setting " + setting + " must be a "
+                    + scope + " setting but has: " + setting.getProperties());
             }
             validateSettingKey(setting);
 
@@ -109,7 +111,7 @@ public abstract class AbstractScopedSettings extends AbstractComponent {
     }
 
     protected AbstractScopedSettings(Settings nodeSettings, Settings scopeSettings, AbstractScopedSettings other) {
-        super(nodeSettings);
+        this.settings = nodeSettings;
         this.lastSettingsApplied = scopeSettings;
         this.scope = other.scope;
         complexMatchers = other.complexMatchers;
@@ -306,13 +308,13 @@ public abstract class AbstractScopedSettings extends AbstractComponent {
      * consumer in order to be processed correctly. This consumer will get a namespace to value map instead of each individual namespace
      * and value as in {@link #addAffixUpdateConsumer(Setting.AffixSetting, BiConsumer, BiConsumer)}
      */
-    public synchronized <T> void addAffixMapUpdateConsumer(Setting.AffixSetting<T> setting,  Consumer<Map<String, T>> consumer,
-                                                        BiConsumer<String, T> validator, boolean omitDefaults) {
+    public synchronized <T> void addAffixMapUpdateConsumer(Setting.AffixSetting<T> setting, Consumer<Map<String, T>> consumer,
+                                                           BiConsumer<String, T> validator) {
         final Setting<?> registeredSetting = this.complexMatchers.get(setting.getKey());
         if (setting != registeredSetting) {
             throw new IllegalArgumentException("Setting is not registered for key [" + setting.getKey() + "]");
         }
-        addSettingsUpdater(setting.newAffixMapUpdater(consumer, logger, validator, omitDefaults));
+        addSettingsUpdater(setting.newAffixMapUpdater(consumer, logger, validator));
     }
 
     synchronized void addSettingsUpdater(SettingUpdater<?> updater) {
@@ -721,10 +723,10 @@ public abstract class AbstractScopedSettings extends AbstractComponent {
             } else if (get(key) == null) {
                 throw new IllegalArgumentException(type + " setting [" + key + "], not recognized");
             } else if (isDelete == false && canUpdate.test(key)) {
-                validate(key, toApply, false); // we might not have a full picture here do to a dependency validation
+                get(key).validateWithoutDependencies(toApply); // we might not have a full picture here do to a dependency validation
                 settingsBuilder.copy(key, toApply);
                 updates.copy(key, toApply);
-                changed = true;
+                changed |= toApply.get(key).equals(target.get(key)) == false;
             } else {
                 if (isFinalSetting(key)) {
                     throw new IllegalArgumentException("final " + type + " setting [" + key + "], not updateable");
@@ -786,15 +788,25 @@ public abstract class AbstractScopedSettings extends AbstractComponent {
         boolean changed = false; // track if any settings were upgraded
         for (final String key : settings.keySet()) {
             final Setting<?> setting = getRaw(key);
-            final Function<Map.Entry<String, String>, Map.Entry<String, String>> upgrader = settingUpgraders.get(setting);
+            final SettingUpgrader<?> upgrader = settingUpgraders.get(setting);
             if (upgrader == null) {
                 // the setting does not have an upgrader, copy the setting
                 builder.copy(key, settings);
             } else {
                 // the setting has an upgrader, so mark that we have changed a setting and apply the upgrade logic
                 changed = true;
-                final Map.Entry<String, String> upgrade = upgrader.apply(new Entry(key, settings));
-                builder.put(upgrade.getKey(), upgrade.getValue());
+                // noinspection ConstantConditions
+                if (setting.getConcreteSetting(key).isListSetting()) {
+                    final List<String> value = settings.getAsList(key);
+                    final String upgradedKey = upgrader.getKey(key);
+                    final List<String> upgradedValue = upgrader.getListValue(value);
+                    builder.putList(upgradedKey, upgradedValue);
+                } else {
+                    final String value = settings.get(key);
+                    final String upgradedKey = upgrader.getKey(key);
+                    final String upgradedValue = upgrader.getValue(value);
+                    builder.put(upgradedKey, upgradedValue);
+                }
             }
         }
         // we only return a new instance if there was an upgrade

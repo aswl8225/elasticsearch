@@ -20,21 +20,28 @@ package org.elasticsearch.client.ml.datafeed;
 
 import org.elasticsearch.client.ml.job.config.Job;
 import org.elasticsearch.common.ParseField;
+import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.ConstructingObjectParser;
+import org.elasticsearch.common.xcontent.ObjectParser;
 import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.query.AbstractQueryBuilder;
+import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.aggregations.AggregatorFactories;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -53,16 +60,13 @@ public class DatafeedUpdate implements ToXContentObject {
         PARSER.declareString(Builder::setJobId, Job.ID);
         PARSER.declareStringArray(Builder::setIndices, DatafeedConfig.INDEXES);
         PARSER.declareStringArray(Builder::setIndices, DatafeedConfig.INDICES);
-        PARSER.declareStringArray(Builder::setTypes, DatafeedConfig.TYPES);
         PARSER.declareString((builder, val) -> builder.setQueryDelay(
             TimeValue.parseTimeValue(val, DatafeedConfig.QUERY_DELAY.getPreferredName())), DatafeedConfig.QUERY_DELAY);
         PARSER.declareString((builder, val) -> builder.setFrequency(
             TimeValue.parseTimeValue(val, DatafeedConfig.FREQUENCY.getPreferredName())), DatafeedConfig.FREQUENCY);
-        PARSER.declareObject(Builder::setQuery, (p, c) -> AbstractQueryBuilder.parseInnerQueryBuilder(p), DatafeedConfig.QUERY);
-        PARSER.declareObject(Builder::setAggregations, (p, c) -> AggregatorFactories.parseAggregators(p),
-            DatafeedConfig.AGGREGATIONS);
-        PARSER.declareObject(Builder::setAggregations, (p, c) -> AggregatorFactories.parseAggregators(p),
-            DatafeedConfig.AGGS);
+        PARSER.declareField(Builder::setQuery, DatafeedUpdate::parseBytes, DatafeedConfig.QUERY, ObjectParser.ValueType.OBJECT);
+        PARSER.declareField(Builder::setAggregations, DatafeedUpdate::parseBytes, DatafeedConfig.AGGREGATIONS,
+                ObjectParser.ValueType.OBJECT);
         PARSER.declareObject(Builder::setScriptFields, (p, c) -> {
             List<SearchSourceBuilder.ScriptField> parsedScriptFields = new ArrayList<>();
             while (p.nextToken() != XContentParser.Token.END_OBJECT) {
@@ -72,6 +76,15 @@ public class DatafeedUpdate implements ToXContentObject {
         }, DatafeedConfig.SCRIPT_FIELDS);
         PARSER.declareInt(Builder::setScrollSize, DatafeedConfig.SCROLL_SIZE);
         PARSER.declareObject(Builder::setChunkingConfig, ChunkingConfig.PARSER, DatafeedConfig.CHUNKING_CONFIG);
+        PARSER.declareObject(Builder::setDelayedDataCheckConfig,
+            DelayedDataCheckConfig.PARSER,
+            DatafeedConfig.DELAYED_DATA_CHECK_CONFIG);
+    }
+
+    private static BytesReference parseBytes(XContentParser parser) throws IOException {
+        XContentBuilder contentBuilder = JsonXContent.contentBuilder();
+        contentBuilder.generator().copyCurrentStructure(parser);
+        return BytesReference.bytes(contentBuilder);
     }
 
     private final String id;
@@ -79,27 +92,27 @@ public class DatafeedUpdate implements ToXContentObject {
     private final TimeValue queryDelay;
     private final TimeValue frequency;
     private final List<String> indices;
-    private final List<String> types;
-    private final QueryBuilder query;
-    private final AggregatorFactories.Builder aggregations;
+    private final BytesReference query;
+    private final BytesReference aggregations;
     private final List<SearchSourceBuilder.ScriptField> scriptFields;
     private final Integer scrollSize;
     private final ChunkingConfig chunkingConfig;
+    private final DelayedDataCheckConfig delayedDataCheckConfig;
 
-    private DatafeedUpdate(String id, String jobId, TimeValue queryDelay, TimeValue frequency, List<String> indices, List<String> types,
-                           QueryBuilder query, AggregatorFactories.Builder aggregations, List<SearchSourceBuilder.ScriptField> scriptFields,
-                           Integer scrollSize, ChunkingConfig chunkingConfig) {
+    private DatafeedUpdate(String id, String jobId, TimeValue queryDelay, TimeValue frequency, List<String> indices, BytesReference query,
+                           BytesReference aggregations, List<SearchSourceBuilder.ScriptField> scriptFields, Integer scrollSize,
+                           ChunkingConfig chunkingConfig, DelayedDataCheckConfig delayedDataCheckConfig) {
         this.id = id;
         this.jobId = jobId;
         this.queryDelay = queryDelay;
         this.frequency = frequency;
         this.indices = indices;
-        this.types = types;
         this.query = query;
         this.aggregations = aggregations;
         this.scriptFields = scriptFields;
         this.scrollSize = scrollSize;
         this.chunkingConfig = chunkingConfig;
+        this.delayedDataCheckConfig = delayedDataCheckConfig;
     }
 
     /**
@@ -121,15 +134,21 @@ public class DatafeedUpdate implements ToXContentObject {
             builder.field(DatafeedConfig.FREQUENCY.getPreferredName(), frequency.getStringRep());
         }
         addOptionalField(builder, DatafeedConfig.INDICES, indices);
-        addOptionalField(builder, DatafeedConfig.TYPES, types);
-        addOptionalField(builder, DatafeedConfig.QUERY, query);
-        addOptionalField(builder, DatafeedConfig.AGGREGATIONS, aggregations);
+        if (query != null) {
+            builder.field(DatafeedConfig.QUERY.getPreferredName(), asMap(query));
+        }
+        if (aggregations != null) {
+            builder.field(DatafeedConfig.AGGREGATIONS.getPreferredName(), asMap(aggregations));
+        }
         if (scriptFields != null) {
             builder.startObject(DatafeedConfig.SCRIPT_FIELDS.getPreferredName());
             for (SearchSourceBuilder.ScriptField scriptField : scriptFields) {
                 scriptField.toXContent(builder, params);
             }
             builder.endObject();
+        }
+        if (delayedDataCheckConfig != null) {
+            builder.field(DatafeedConfig.DELAYED_DATA_CHECK_CONFIG.getPreferredName(), delayedDataCheckConfig);
         }
         addOptionalField(builder, DatafeedConfig.SCROLL_SIZE, scrollSize);
         addOptionalField(builder, DatafeedConfig.CHUNKING_CONFIG, chunkingConfig);
@@ -159,19 +178,15 @@ public class DatafeedUpdate implements ToXContentObject {
         return indices;
     }
 
-    public List<String> getTypes() {
-        return types;
-    }
-
     public Integer getScrollSize() {
         return scrollSize;
     }
 
-    public QueryBuilder getQuery() {
+    public BytesReference getQuery() {
         return query;
     }
 
-    public AggregatorFactories.Builder getAggregations() {
+    public BytesReference getAggregations() {
         return aggregations;
     }
 
@@ -183,10 +198,22 @@ public class DatafeedUpdate implements ToXContentObject {
         return chunkingConfig;
     }
 
+    public DelayedDataCheckConfig getDelayedDataCheckConfig() {
+        return delayedDataCheckConfig;
+    }
+
+    private static Map<String, Object> asMap(BytesReference bytesReference) {
+        return bytesReference == null ? null : XContentHelper.convertToMap(bytesReference, true, XContentType.JSON).v2();
+    }
+
     /**
      * The lists of indices and types are compared for equality but they are not
      * sorted first so this test could fail simply because the indices and types
      * lists are in different orders.
+     *
+     * Also note this could be a heavy operation when a query or aggregations
+     * are set as we need to convert the bytes references into maps to correctly
+     * compare them.
      */
     @Override
     public boolean equals(Object other) {
@@ -205,18 +232,27 @@ public class DatafeedUpdate implements ToXContentObject {
             && Objects.equals(this.frequency, that.frequency)
             && Objects.equals(this.queryDelay, that.queryDelay)
             && Objects.equals(this.indices, that.indices)
-            && Objects.equals(this.types, that.types)
-            && Objects.equals(this.query, that.query)
+            && Objects.equals(asMap(this.query), asMap(that.query))
             && Objects.equals(this.scrollSize, that.scrollSize)
-            && Objects.equals(this.aggregations, that.aggregations)
+            && Objects.equals(asMap(this.aggregations), asMap(that.aggregations))
+            && Objects.equals(this.delayedDataCheckConfig, that.delayedDataCheckConfig)
             && Objects.equals(this.scriptFields, that.scriptFields)
             && Objects.equals(this.chunkingConfig, that.chunkingConfig);
     }
 
+    /**
+     * Note this could be a heavy operation when a query or aggregations
+     * are set as we need to convert the bytes references into maps to
+     * compute a stable hash code.
+     */
     @Override
     public int hashCode() {
-        return Objects.hash(id, jobId, frequency, queryDelay, indices, types, query, scrollSize, aggregations, scriptFields,
-            chunkingConfig);
+        return Objects.hash(id, jobId, frequency, queryDelay, indices, asMap(query), scrollSize, asMap(aggregations), scriptFields,
+            chunkingConfig, delayedDataCheckConfig);
+    }
+
+    public static Builder builder(String id) {
+        return new Builder(id);
     }
 
     public static class Builder {
@@ -226,12 +262,12 @@ public class DatafeedUpdate implements ToXContentObject {
         private TimeValue queryDelay;
         private TimeValue frequency;
         private List<String> indices;
-        private List<String> types;
-        private QueryBuilder query;
-        private AggregatorFactories.Builder aggregations;
+        private BytesReference query;
+        private BytesReference aggregations;
         private List<SearchSourceBuilder.ScriptField> scriptFields;
         private Integer scrollSize;
         private ChunkingConfig chunkingConfig;
+        private DelayedDataCheckConfig delayedDataCheckConfig;
 
         public Builder(String id) {
             this.id = Objects.requireNonNull(id, DatafeedConfig.ID.getPreferredName());
@@ -243,12 +279,12 @@ public class DatafeedUpdate implements ToXContentObject {
             this.queryDelay = config.queryDelay;
             this.frequency = config.frequency;
             this.indices = config.indices;
-            this.types = config.types;
             this.query = config.query;
             this.aggregations = config.aggregations;
             this.scriptFields = config.scriptFields;
             this.scrollSize = config.scrollSize;
             this.chunkingConfig = config.chunkingConfig;
+            this.delayedDataCheckConfig = config.delayedDataCheckConfig;
         }
 
         public Builder setJobId(String jobId) {
@@ -261,9 +297,8 @@ public class DatafeedUpdate implements ToXContentObject {
             return this;
         }
 
-        public Builder setTypes(List<String> types) {
-            this.types = types;
-            return this;
+        public Builder setIndices(String... indices) {
+            return setIndices(Arrays.asList(indices));
         }
 
         public Builder setQueryDelay(TimeValue queryDelay) {
@@ -276,13 +311,33 @@ public class DatafeedUpdate implements ToXContentObject {
             return this;
         }
 
-        public Builder setQuery(QueryBuilder query) {
+        private Builder setQuery(BytesReference query) {
             this.query = query;
             return this;
         }
 
-        public Builder setAggregations(AggregatorFactories.Builder aggregations) {
+        public Builder setQuery(String queryAsJson) {
+            this.query = queryAsJson == null ? null : new BytesArray(queryAsJson);
+            return this;
+        }
+
+        public Builder setQuery(QueryBuilder query) throws IOException {
+            this.query = query == null ? null : xContentToBytes(query);
+            return this;
+        }
+
+        private Builder setAggregations(BytesReference aggregations) {
             this.aggregations = aggregations;
+            return this;
+        }
+
+        public Builder setAggregations(String aggsAsJson) {
+            this.aggregations = aggsAsJson == null ? null : new BytesArray(aggsAsJson);
+            return this;
+        }
+
+        public Builder setAggregations(AggregatorFactories.Builder aggregations) throws IOException {
+            this.aggregations = aggregations == null ? null : xContentToBytes(aggregations);
             return this;
         }
 
@@ -303,9 +358,21 @@ public class DatafeedUpdate implements ToXContentObject {
             return this;
         }
 
+        public Builder setDelayedDataCheckConfig(DelayedDataCheckConfig delayedDataCheckConfig) {
+            this.delayedDataCheckConfig = delayedDataCheckConfig;
+            return this;
+        }
+
         public DatafeedUpdate build() {
-            return new DatafeedUpdate(id, jobId, queryDelay, frequency, indices, types, query, aggregations, scriptFields, scrollSize,
-                chunkingConfig);
+            return new DatafeedUpdate(id, jobId, queryDelay, frequency, indices, query, aggregations, scriptFields, scrollSize,
+                chunkingConfig, delayedDataCheckConfig);
+        }
+
+        private static BytesReference xContentToBytes(ToXContentObject object) throws IOException {
+            try (XContentBuilder builder = JsonXContent.contentBuilder()) {
+                object.toXContent(builder, ToXContentObject.EMPTY_PARAMS);
+                return BytesReference.bytes(builder);
+            }
         }
     }
 }

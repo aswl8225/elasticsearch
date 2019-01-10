@@ -10,7 +10,7 @@ import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.xpack.sql.proto.ColumnInfo;
 import org.elasticsearch.xpack.sql.proto.Mode;
 
-import java.sql.JDBCType;
+import java.sql.Types;
 
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.hamcrest.Matchers.equalTo;
@@ -18,6 +18,7 @@ import static org.hamcrest.Matchers.hasSize;
 
 public class SqlActionIT extends AbstractSqlIntegTestCase {
 
+    @AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/37191")
     public void testSqlAction() throws Exception {
         assertAcked(client().admin().indices().prepareCreate("test").get());
         client().prepareBulk()
@@ -35,8 +36,8 @@ public class SqlActionIT extends AbstractSqlIntegTestCase {
         assertThat(response.columns(), hasSize(2));
         int dataIndex = dataBeforeCount ? 0 : 1;
         int countIndex = dataBeforeCount ? 1 : 0;
-        assertEquals(new ColumnInfo("", "data", "text", JDBCType.VARCHAR, 0), response.columns().get(dataIndex));
-        assertEquals(new ColumnInfo("", "count", "long", JDBCType.BIGINT, 20), response.columns().get(countIndex));
+        assertEquals(new ColumnInfo("", "data", "text", Types.VARCHAR, 0), response.columns().get(dataIndex));
+        assertEquals(new ColumnInfo("", "count", "long", Types.BIGINT, 20), response.columns().get(countIndex));
 
         assertThat(response.rows(), hasSize(2));
         assertEquals("bar", response.rows().get(0).get(dataIndex));
